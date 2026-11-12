@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "database": {
+    "engine": "SQLite",
+    "foreign_keys_required": true,
+    "id_format": "UUID v4 stored as canonical TEXT",
+    "timestamp_format": "ISO 8601 UTC stored as TEXT",
+    "tables": [
+      {
+        "name": "users",
+        "columns": [
+          {
+            "name": "id",
+            "type": "TEXT",
+            "nullable": false,
+            "primary_key": true,
+            "generated_by": "application UUID v4"
+          },
+          {
+            "name": "username",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "password_hash",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "created_at",
+            "type": "TEXT",
+            "nullable": false
+          }
+        ],
+        "constraints": [
+          {
+            "kind": "unique",
+            "columns": [
+              "username"
+            ]
+          },
+          {
+            "kind": "check",
+            "expression": "length(trim(username)) > 0"
+          }
+        ]
+      },
+      {
+        "name": "boards",
+        "columns": [
+          {
+            "name": "id",
+            "type": "TEXT",
+            "nullable": false,
+            "primary_key": true,
+            "generated_by": "application UUID v4"
+          },
+          {
+            "name": "user_id",
+            "type": "TEXT",
+            "nullable": false,
+            "references": {
+              "table": "users",
+              "column": "id",
+              "on_delete": "CASCADE"
+            }
+          },
+          {
+            "name": "title",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "created_at",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "updated_at",
+            "type": "TEXT",
+            "nullable": false
+          }
+        ],
+        "constraints": [
+          {
+            "kind": "unique",
+            "columns": [
+              "user_id"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "columns",
+        "columns": [
+          {
+            "name": "id",
+            "type": "TEXT",
+            "nullable": false,
+            "primary_key": true,
+            "generated_by": "application UUID v4"
+          },
+          {
+            "name": "board_id",
+            "type": "TEXT",
+            "nullable": false,
+            "references": {
+              "table": "boards",
+              "column": "id",
+              "on_delete": "CASCADE"
+            }
+          },
+          {
+            "name": "name",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "position",
+            "type": "INTEGER",
+            "nullable": false
+          }
+        ],
+        "constraints": [
+          {
+            "kind": "unique",
+            "columns": [
+              "board_id",
+              "position"
+            ]
+          },
+          {
+            "kind": "check",
+            "expression": "position >= 0"
+          },
+          {
+            "kind": "check",
+            "expression": "length(trim(name)) > 0"
+          }
+        ]
+      },
+      {
+        "name": "cards",
+        "columns": [
+          {
+            "name": "id",
+            "type": "TEXT",
+            "nullable": false,
+            "primary_key": true,
+            "generated_by": "application UUID v4"
+          },
+          {
+            "name": "column_id",
+            "type": "TEXT",
+            "nullable": false,
+            "references": {
+              "table": "columns",
+              "column": "id",
+              "on_delete": "CASCADE"
+            }
+          },
+          {
+            "name": "title",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "details",
+            "type": "TEXT",
+            "nullable": false,
+            "default": ""
+          },
+          {
+            "name": "position",
+            "type": "INTEGER",
+            "nullable": false
+          },
+          {
+            "name": "created_at",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "updated_at",
+            "type": "TEXT",
+            "nullable": false
+          }
+        ],
+        "constraints": [
+          {
+            "kind": "unique",
+            "columns": [
+              "column_id",
+              "position"
+            ]
+          },
+          {
+            "kind": "check",
+            "expression": "position >= 0"
+          },
+          {
+            "kind": "check",
+            "expression": "length(trim(title)) > 0"
+          }
+        ]
+      },
+      {
+        "name": "sessions",
+        "columns": [
+          {
+            "name": "id",
+            "type": "TEXT",
+            "nullable": false,
+            "primary_key": true,
+            "generated_by": "application UUID v4"
+          },
+          {
+            "name": "user_id",
+            "type": "TEXT",
+            "nullable": false,
+            "references": {
+              "table": "users",
+              "column": "id",
+              "on_delete": "CASCADE"
+            }
+          },
+          {
+            "name": "token_hash",
+            "type": "TEXT",
+            "nullable": false,
+            "unique": true
+          },
+          {
+            "name": "created_at",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "expires_at",
+            "type": "TEXT",
+            "nullable": false
+          },
+          {
+            "name": "revoked_at",
+            "type": "TEXT",
+            "nullable": true
+          }
+        ],
+        "constraints": [
+          {
+            "kind": "check",
+              "expression": "julianday(created_at) IS NOT NULL AND julianday(expires_at) > julianday(created_at)"
+          }
+        ],
+        "indexes": [
+          {
+            "name": "idx_sessions_user_expires_at",
+            "columns": [
+              "user_id",
+              "expires_at"
+            ],
+            "unique": false
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "from": "users.id",
+        "to": "boards.user_id",
+        "cardinality": "one-to-zero-or-one",
+        "enforced_by": "UNIQUE(boards.user_id)"
+      },
+      {
+        "from": "boards.id",
+        "to": "columns.board_id",
+        "cardinality": "one-to-many"
+      },
+      {
+        "from": "columns.id",
+        "to": "cards.column_id",
+        "cardinality": "one-to-many"
+      },
+      {
+        "from": "users.id",
+        "to": "sessions.user_id",
+        "cardinality": "one-to-many"
+      }
+    ],
+    "default_board_columns": [
+      {
+        "position": 0,
+        "name": "ایده‌ها"
+      },
+      {
+        "position": 1,
+        "name": "برنامه‌ریزی"
+      },
+      {
+        "position": 2,
+        "name": "در حال انجام"
+      },
+      {
+        "position": 3,
+        "name": "بازبینی"
+      },
+      {
+        "position": 4,
+        "name": "انجام‌شده"
+      }
+    ]
+  }
+}
