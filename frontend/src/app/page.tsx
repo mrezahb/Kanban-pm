@@ -29,6 +29,8 @@ import {
   Inbox,
   LayoutDashboard,
   Layers3,
+  LogIn,
+  LogOut,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -36,6 +38,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import {
+  useEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -47,7 +50,6 @@ import {
   addCard,
   countCards,
   deleteCard,
-  initialBoard,
   moveCard,
   renameColumn,
   updateCard,
@@ -55,8 +57,27 @@ import {
   type Card,
   type Column,
 } from "@/lib/board";
+import {
+  ApiError,
+  getBoard,
+  getCurrentUser,
+  login,
+  logout,
+  saveBoard,
+  type User,
+} from "@/lib/api";
 
 const columnDropPrefix = "column:";
+
+type AuthStatus = "loading" | "anonymous" | "authenticated" | "error";
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof SyntaxError) return "پاسخ سرور قابل‌خواندن نیست.";
+  if (error instanceof TypeError) return "ارتباط با سرور برقرار نشد.";
+  if (error instanceof Error) return error.message;
+  return "خطای غیرمنتظره‌ای رخ داد.";
+}
 
 const boardCollisionDetection: CollisionDetection = (args) => {
   const pointerCollisions = pointerWithin(args);
@@ -76,13 +97,61 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 };
 
 export default function Home() {
-  const [board, setBoard] = useState<Board>(initialBoard);
+  const [board, setBoard] = useState<Board>([]);
+  const [boardTitle, setBoardTitle] = useState("");
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
+  const [sessionAttempt, setSessionAttempt] = useState(0);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [boardError, setBoardError] = useState<string | null>(null);
+  const [isLoginPending, setIsLoginPending] = useState(false);
+  const [isLogoutPending, setIsLogoutPending] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [isAddingColumn, setIsAddingColumn] = useState(false);
+  const boardRef = useRef<Board>([]);
+  const savingRef = useRef(false);
   const boardColumnsRef = useRef<HTMLDivElement>(null);
   const boardStyle: CSSProperties & { "--column-count": number } = {
     "--column-count": board.length + 1,
   };
+  useEffect(() => {
+    let active = true;
+
+    async function restoreSession() {
+      setAuthStatus("loading");
+      setSessionError(null);
+      try {
+        const user = await getCurrentUser();
+        const savedBoard = await getBoard();
+        if (!active) return;
+
+        setCurrentUser(user);
+        setBoard(savedBoard.columns);
+        boardRef.current = savedBoard.columns;
+        setBoardTitle(savedBoard.title);
+        setAuthStatus("authenticated");
+      } catch (error) {
+        if (!active) return;
+        if (error instanceof ApiError && error.status === 401) {
+          setCurrentUser(null);
+          setBoard([]);
+          boardRef.current = [];
+          setAuthStatus("anonymous");
+        } else {
+          setSessionError(getErrorMessage(error));
+          setAuthStatus("error");
+        }
+      }
+    }
+
+    void restoreSession();
+    return () => {
+      active = false;
+    };
+  }, [sessionAttempt]);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, {
@@ -93,12 +162,80 @@ export default function Home() {
     .flatMap((column) => column.cards)
     .find((card) => card.id === activeCardId);
 
-  function handleDragEnd(event: DragEndEvent) {
+  async function handleLogin(username: string, password: string) {
+    setLoginError(null);
+    setIsLoginPending(true);
+    try {
+      const user = await login(username, password);
+      const savedBoard = await getBoard();
+      setCurrentUser(user);
+      setBoard(savedBoard.columns);
+      boardRef.current = savedBoard.columns;
+      setBoardTitle(savedBoard.title);
+      setAuthStatus("authenticated");
+    } catch (error) {
+      setLoginError(
+        error instanceof ApiError && error.status === 401
+          ? "نام کاربری یا گذرواژه نادرست است."
+          : getErrorMessage(error),
+      );
+    } finally {
+      setIsLoginPending(false);
+    }
+  }
+
+  async function handleLogout() {
+    if (savingRef.current) return;
+    setBoardError(null);
+    setIsLogoutPending(true);
+    try {
+      await logout();
+      setCurrentUser(null);
+      setBoard([]);
+      boardRef.current = [];
+      setLoginError(null);
+      setAuthStatus("anonymous");
+    } catch (error) {
+      setBoardError(getErrorMessage(error));
+    } finally {
+      setIsLogoutPending(false);
+    }
+  }
+
+  async function persistBoard(nextBoard: Board): Promise<boolean> {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    setIsSaving(true);
+    setBoardError(null);
+    try {
+      const savedBoard = await saveBoard(nextBoard);
+      setBoard(savedBoard.columns);
+      boardRef.current = savedBoard.columns;
+      setBoardTitle(savedBoard.title);
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setCurrentUser(null);
+        setBoard([]);
+        boardRef.current = [];
+        setLoginError("نشست شما پایان یافته است. دوباره وارد شوید.");
+        setAuthStatus("anonymous");
+      } else {
+        setBoardError(getErrorMessage(error));
+      }
+      return false;
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+  }
+
+  async function handleDragEnd(event: DragEndEvent) {
     setActiveCardId(null);
     if (!event.over) return;
 
     const overId = String(event.over.id);
-    const destinationColumn = board.find(
+    const destinationColumn = boardRef.current.find(
       (column) =>
         `${columnDropPrefix}${column.id}` === overId ||
         column.cards.some((card) => card.id === overId),
@@ -110,9 +247,9 @@ export default function Home() {
     )
       ? overId
       : undefined;
-    setBoard((currentBoard) =>
+    await persistBoard(
       moveCard(
-        currentBoard,
+        boardRef.current,
         String(event.active.id),
         destinationColumn.id,
         beforeCardId,
@@ -120,9 +257,13 @@ export default function Home() {
     );
   }
 
-  function handleAddCard(columnId: string, title: string, details: string) {
-    setBoard((currentBoard) =>
-      addCard(currentBoard, columnId, {
+  function handleAddCard(
+    columnId: string,
+    title: string,
+    details: string,
+  ): Promise<boolean> {
+    return persistBoard(
+      addCard(boardRef.current, columnId, {
         id: crypto.randomUUID(),
         title,
         details,
@@ -130,28 +271,74 @@ export default function Home() {
     );
   }
 
-  function handleUpdateCard(cardId: string, title: string, details: string) {
-    setBoard((currentBoard) =>
-      updateCard(currentBoard, cardId, { title, details }),
+  function handleUpdateCard(
+    cardId: string,
+    title: string,
+    details: string,
+  ): Promise<boolean> {
+    return persistBoard(
+      updateCard(boardRef.current, cardId, { title, details }),
     );
   }
 
-  function handleAddColumn(name: string) {
-    const columnName = name.trim();
-    if (!columnName) return;
+  function handleDeleteCard(cardId: string): Promise<boolean> {
+    return persistBoard(deleteCard(boardRef.current, cardId));
+  }
 
-    setBoard((currentBoard) =>
-      addColumn(currentBoard, {
+  function handleRenameColumn(
+    columnId: string,
+    name: string,
+  ): Promise<boolean> {
+    return persistBoard(renameColumn(boardRef.current, columnId, name));
+  }
+
+  async function handleAddColumn(name: string): Promise<boolean> {
+    const columnName = name.trim();
+    if (!columnName) return false;
+
+    const saved = await persistBoard(
+      addColumn(boardRef.current, {
         id: crypto.randomUUID(),
         name: columnName,
         cards: [],
       }),
     );
-    setIsAddingColumn(false);
-    requestAnimationFrame(() => {
-      const columns = boardColumnsRef.current;
-      columns?.scrollTo({ left: -columns.scrollWidth, behavior: "smooth" });
-    });
+    if (saved) {
+      setIsAddingColumn(false);
+      requestAnimationFrame(() => {
+        const columns = boardColumnsRef.current;
+        columns?.scrollTo({ left: -columns.scrollWidth, behavior: "smooth" });
+      });
+    }
+    return saved;
+  }
+
+  if (authStatus === "loading") {
+    return <StatusScreen message="در حال بررسی نشست و بارگذاری برد..." />;
+  }
+
+  if (authStatus === "error") {
+    return (
+      <StatusScreen
+        message={sessionError ?? "بارگذاری برنامه ناموفق بود."}
+        actionLabel="تلاش دوباره"
+        onAction={() => setSessionAttempt((attempt) => attempt + 1)}
+      />
+    );
+  }
+
+  if (authStatus === "anonymous") {
+    return (
+      <LoginForm
+        error={loginError}
+        isPending={isLoginPending}
+        onSubmit={handleLogin}
+      />
+    );
+  }
+
+  if (!currentUser) {
+    return <StatusScreen message="اطلاعات نشست در دسترس نیست." />;
   }
 
   return (
@@ -187,9 +374,18 @@ export default function Home() {
           <span className="topbar-icon" aria-label="اعلان‌ها">
             <Bell size={17} />
           </span>
-          <span className="workspace-avatar" aria-label="تیم محصول">
-            ت
+          <span className="workspace-avatar" aria-label={currentUser.username}>
+            {currentUser.username.slice(0, 1).toLocaleUpperCase()}
           </span>
+          <button
+            className="logout-button"
+            type="button"
+            onClick={() => void handleLogout()}
+            disabled={isLogoutPending || isSaving}
+          >
+            <LogOut size={15} />
+            خروج
+          </button>
         </div>
       </header>
 
@@ -211,7 +407,7 @@ export default function Home() {
             <span className="sidebar-link-icon">
               <Inbox size={17} />
             </span>
-            <span>تختهٔ تیم محصول</span>
+            <span>{boardTitle}</span>
             <span className="sidebar-link-count">{countCards(board)}</span>
           </Link>
 
@@ -229,21 +425,27 @@ export default function Home() {
           </div>
         </aside>
 
-        <main className="workspace-main" dir="rtl" id="board">
+        <main
+          className="workspace-main"
+          dir="rtl"
+          id="board"
+          aria-busy={isSaving}
+          inert={isSaving}
+        >
           <div className="board-header">
             <div className="board-heading">
               <div className="board-breadcrumb">
                 استودیو محصول <span>/</span> تخته‌ها
               </div>
               <h1 className="heading-title" id="page-title">
-                تختهٔ تیم محصول
+                {boardTitle}
               </h1>
             </div>
             <div className="board-header-meta">
-              <div className="member-stack" aria-label="اعضای تیم">
-                <span className="member-avatar member-avatar-one">ن</span>
-                <span className="member-avatar member-avatar-two">م</span>
-                <span className="member-avatar member-avatar-three">آ</span>
+              <div className="member-stack" aria-label={currentUser.username}>
+                <span className="member-avatar member-avatar-one">
+                  {currentUser.username.slice(0, 1).toLocaleUpperCase()}
+                </span>
               </div>
               <span className="board-meta-divider" />
               <div className="board-stat">
@@ -257,6 +459,12 @@ export default function Home() {
               </div>
             </div>
           </div>
+
+          {boardError && (
+            <p className="board-error" role="alert">
+              {boardError}
+            </p>
+          )}
 
           <section className="board-canvas" aria-labelledby="board-title">
             <div className="board-toolbar">
@@ -274,6 +482,11 @@ export default function Home() {
                 </span>
               </div>
               <div className="board-toolbar-actions">
+                {isSaving && (
+                  <p className="save-status" role="status">
+                    در حال ذخیره...
+                  </p>
+                )}
                 <p className="drag-hint">
                   <GripVertical size={15} />
                   برای جابه‌جایی، کارت را بکشید
@@ -301,16 +514,8 @@ export default function Home() {
                     column={column}
                     onAddCard={handleAddCard}
                     onUpdateCard={handleUpdateCard}
-                    onDeleteCard={(cardId) =>
-                      setBoard((currentBoard) =>
-                        deleteCard(currentBoard, cardId),
-                      )
-                    }
-                    onRename={(name) =>
-                      setBoard((currentBoard) =>
-                        renameColumn(currentBoard, column.id, name),
-                      )
-                    }
+                    onDeleteCard={handleDeleteCard}
+                    onRename={(name) => handleRenameColumn(column.id, name)}
                   />
                 ))}
                 <div className="add-column-slot">
@@ -347,19 +552,118 @@ export default function Home() {
   );
 }
 
+function StatusScreen({
+  message,
+  actionLabel,
+  onAction,
+}: {
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <main className="status-page" dir="rtl">
+      <section className="status-card" role="status" aria-live="polite">
+        <Image
+          className="auth-logo"
+          src="/project-manager-logo.svg"
+          width={48}
+          height={48}
+          alt=""
+          priority
+        />
+        <p>{message}</p>
+        {actionLabel && onAction && (
+          <button className="auth-submit" type="button" onClick={onAction}>
+            {actionLabel}
+          </button>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function LoginForm({
+  error,
+  isPending,
+  onSubmit,
+}: {
+  error: string | null;
+  isPending: boolean;
+  onSubmit: (username: string, password: string) => Promise<void>;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onSubmit(username.trim(), password);
+  }
+
+  return (
+    <main className="status-page" dir="rtl">
+      <form className="auth-card" onSubmit={handleSubmit}>
+        <Image
+          className="auth-logo"
+          src="/project-manager-logo.svg"
+          width={48}
+          height={48}
+          alt=""
+          priority
+        />
+        <p className="auth-eyebrow">مدیریت پروژه</p>
+        <h1>ورود به فضای کاری</h1>
+        <p className="auth-description">برای مشاهدهٔ برد کانبان وارد شوید.</p>
+        <label className="auth-label" htmlFor="username">
+          نام کاربری
+        </label>
+        <input
+          id="username"
+          className="auth-input"
+          autoComplete="username"
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          required
+        />
+        <label className="auth-label" htmlFor="password">
+          گذرواژه
+        </label>
+        <input
+          id="password"
+          className="auth-input"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          required
+        />
+        {error && (
+          <p className="auth-error" role="alert">
+            {error}
+          </p>
+        )}
+        <button className="auth-submit" type="submit" disabled={isPending}>
+          <LogIn size={16} />
+          {isPending ? "در حال ورود..." : "ورود"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
 function AddColumnForm({
   onSubmit,
   onCancel,
 }: {
-  onSubmit: (name: string) => void;
+  onSubmit: (name: string) => Promise<boolean>;
   onCancel: () => void;
 }) {
   const [name, setName] = useState("");
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedName = name.trim();
-    if (trimmedName) onSubmit(trimmedName);
+    if (trimmedName) await onSubmit(trimmedName);
   }
 
   return (
@@ -390,10 +694,18 @@ function AddColumnForm({
 
 interface KanbanColumnProps {
   column: Column;
-  onAddCard: (columnId: string, title: string, details: string) => void;
-  onUpdateCard: (cardId: string, title: string, details: string) => void;
-  onDeleteCard: (cardId: string) => void;
-  onRename: (name: string) => void;
+  onAddCard: (
+    columnId: string,
+    title: string,
+    details: string,
+  ) => Promise<boolean>;
+  onUpdateCard: (
+    cardId: string,
+    title: string,
+    details: string,
+  ) => Promise<boolean>;
+  onDeleteCard: (cardId: string) => Promise<boolean>;
+  onRename: (name: string) => Promise<boolean>;
 }
 
 function KanbanColumn({
@@ -410,10 +722,9 @@ function KanbanColumn({
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(column.name);
 
-  function saveName(event: FormEvent<HTMLFormElement>) {
+  async function saveName(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    onRename(nameDraft);
-    setIsEditingName(false);
+    if (await onRename(nameDraft)) setIsEditingName(false);
   }
 
   function handleNameKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -500,9 +811,12 @@ function KanbanColumn({
       {isAddingCard ? (
         <CardForm
           submitLabel="ثبت کارت"
-          onSubmit={(title, details) => {
-            onAddCard(column.id, title, details);
-            setIsAddingCard(false);
+          onSubmit={async (title, details) => {
+            const saved = await onAddCard(column.id, title, details);
+            if (saved) {
+              setIsAddingCard(false);
+            }
+            return saved;
           }}
           onCancel={() => setIsAddingCard(false)}
         />
@@ -525,7 +839,7 @@ interface CardFormProps {
   initialTitle?: string;
   initialDetails?: string;
   submitLabel: string;
-  onSubmit: (title: string, details: string) => void;
+  onSubmit: (title: string, details: string) => Promise<boolean>;
   onCancel: () => void;
 }
 
@@ -539,11 +853,11 @@ function CardForm({
   const [title, setTitle] = useState(initialTitle);
   const [details, setDetails] = useState(initialDetails);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedTitle = title.trim();
     if (!trimmedTitle) return;
-    onSubmit(trimmedTitle, details.trim());
+    await onSubmit(trimmedTitle, details.trim());
   }
 
   return (
@@ -583,8 +897,8 @@ function CardForm({
 
 interface SortableCardProps {
   card: Card;
-  onEdit: (title: string, details: string) => void;
-  onDelete: () => void;
+  onEdit: (title: string, details: string) => Promise<boolean>;
+  onDelete: () => Promise<boolean>;
 }
 
 function SortableCard({ card, onEdit, onDelete }: SortableCardProps) {
@@ -613,9 +927,10 @@ function SortableCard({ card, onEdit, onDelete }: SortableCardProps) {
           initialTitle={card.title}
           initialDetails={card.details}
           submitLabel="ذخیره تغییرات"
-          onSubmit={(title, details) => {
-            onEdit(title, details);
-            setIsEditing(false);
+          onSubmit={async (title, details) => {
+            const saved = await onEdit(title, details);
+            if (saved) setIsEditing(false);
+            return saved;
           }}
           onCancel={() => setIsEditing(false)}
         />
@@ -647,7 +962,7 @@ function SortableCard({ card, onEdit, onDelete }: SortableCardProps) {
                 type="button"
                 aria-label={`حذف کارت ${card.title}`}
                 title="حذف کارت"
-                onClick={onDelete}
+                onClick={() => void onDelete()}
               >
                 <Trash2 size={14} />
               </button>

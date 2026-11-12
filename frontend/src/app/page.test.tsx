@@ -1,11 +1,42 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import type {
   AnchorHTMLAttributes,
   ImgHTMLAttributes,
 } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { initialBoard } from "@/lib/board";
+import type { BoardResponse, User } from "@/lib/api";
 import Home from "./page";
 
+const apiMocks = vi.hoisted(() => {
+  class MockApiError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+    ) {
+      super(message);
+      this.name = "ApiError";
+    }
+  }
+
+  return {
+    ApiError: MockApiError,
+    getCurrentUser: vi.fn(),
+    getBoard: vi.fn(),
+    login: vi.fn(),
+    logout: vi.fn(),
+    saveBoard: vi.fn(),
+  };
+});
+
+vi.mock("@/lib/api", () => apiMocks);
 vi.mock("next/link", () => ({
   default: ({
     href,
@@ -29,21 +60,94 @@ vi.mock("next/image", async () => {
   };
 });
 
+const user: User = { id: "user-id", username: "user" };
+let savedBoard: BoardResponse;
+
+function createServerBoard(): BoardResponse {
+  return {
+    id: "board-id",
+    title: "تختهٔ تیم محصول",
+    columns: initialBoard,
+  };
+}
+
+async function renderBoard() {
+  render(<Home />);
+  await screen.findByRole("heading", { name: "تختهٔ تیم محصول" });
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
 
-describe("Kanban board", () => {
-  it("renders the sample columns and cards", () => {
+beforeEach(() => {
+  vi.clearAllMocks();
+  savedBoard = createServerBoard();
+  apiMocks.getCurrentUser.mockResolvedValue(user);
+  apiMocks.getBoard.mockImplementation(async () => savedBoard);
+  apiMocks.login.mockResolvedValue(user);
+  apiMocks.logout.mockResolvedValue(undefined);
+  apiMocks.saveBoard.mockImplementation(async (columns) => {
+    savedBoard = { ...savedBoard, columns };
+    return savedBoard;
+  });
+});
+
+describe("Kanban board authentication and persistence", () => {
+  it("does not show the board before a session is restored", async () => {
+    apiMocks.getCurrentUser.mockRejectedValueOnce(
+      new apiMocks.ApiError("Unauthorized", 401),
+    );
     render(<Home />);
+
+    expect(await screen.findByRole("heading", { name: "ورود به فضای کاری" })).toBeTruthy();
+    expect(screen.queryByTestId("board-columns")).toBeNull();
+  });
+
+  it("loads the saved board for an authenticated user", async () => {
+    await renderBoard();
 
     expect(screen.getAllByTestId(/^kanban-column-/)).toHaveLength(5);
     expect(screen.getByText("بازنویسی متن صفحهٔ اصلی")).toBeTruthy();
+    expect(apiMocks.getCurrentUser).toHaveBeenCalledOnce();
+    expect(apiMocks.getBoard).toHaveBeenCalledOnce();
   });
 
-  it("edits a card title and details", () => {
+  it("logs in and reports invalid credentials", async () => {
+    apiMocks.getCurrentUser.mockRejectedValueOnce(
+      new apiMocks.ApiError("Unauthorized", 401),
+    );
+    apiMocks.login.mockRejectedValueOnce(
+      new apiMocks.ApiError("Invalid username or password", 401),
+    );
     render(<Home />);
+
+    fireEvent.change(await screen.findByRole("textbox", { name: "نام کاربری" }), {
+      target: { value: "user" },
+    });
+    fireEvent.change(screen.getByLabelText("گذرواژه"), {
+      target: { value: "wrong" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "ورود" }));
+
+    expect(
+      await screen.findByText("نام کاربری یا گذرواژه نادرست است."),
+    ).toBeTruthy();
+    expect(apiMocks.login).toHaveBeenCalledWith("user", "wrong");
+  });
+
+  it("retries after a session-check network error", async () => {
+    apiMocks.getCurrentUser.mockRejectedValueOnce(new TypeError("fetch failed"));
+    render(<Home />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "تلاش دوباره" }));
+
+    expect(await screen.findByRole("heading", { name: "تختهٔ تیم محصول" })).toBeTruthy();
+  });
+
+  it("edits a card and reflects the saved server response", async () => {
+    await renderBoard();
     const card = screen.getByTestId("kanban-card-brand-story");
 
     fireEvent.click(
@@ -59,13 +163,14 @@ describe("Kanban board", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "ذخیره تغییرات" }));
 
-    expect(within(card).getByText("عنوان ویرایش‌شده")).toBeTruthy();
+    expect(await within(card).findByText("عنوان ویرایش‌شده")).toBeTruthy();
     expect(within(card).getByText("جزئیات ویرایش‌شده")).toBeTruthy();
+    expect(apiMocks.saveBoard).toHaveBeenCalledOnce();
   });
 
-  it("adds and deletes a card", () => {
+  it("adds and deletes a card through the board API", async () => {
     vi.stubGlobal("crypto", { randomUUID: () => "new-card-id" });
-    render(<Home />);
+    await renderBoard();
 
     fireEvent.click(
       screen.getByRole("button", { name: "افزودن کارت به ایده‌ها" }),
@@ -78,24 +183,39 @@ describe("Kanban board", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "ثبت کارت" }));
 
-    const card = screen.getByTestId("kanban-card-new-card-id");
-    expect(within(card).getByText("کارت تازه")).toBeTruthy();
+    const card = await screen.findByTestId("kanban-card-new-card-id");
     fireEvent.click(
       within(card).getByRole("button", { name: "حذف کارت کارت تازه" }),
     );
-    expect(screen.queryByTestId("kanban-card-new-card-id")).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByTestId("kanban-card-new-card-id")).toBeNull(),
+    );
+    expect(apiMocks.saveBoard).toHaveBeenCalledTimes(2);
   });
 
-  it("adds a column and scrolls the board to it", () => {
-    vi.stubGlobal("crypto", { randomUUID: () => "new-column-id" });
-    vi.stubGlobal(
-      "requestAnimationFrame",
-      (callback: FrameRequestCallback) => {
-        callback(0);
-        return 0;
-      },
+  it("keeps the previous board and displays save failures", async () => {
+    apiMocks.saveBoard.mockRejectedValueOnce(new Error("Save failed"));
+    await renderBoard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "افزودن کارت به ایده‌ها" }),
     );
-    render(<Home />);
+    fireEvent.change(screen.getByRole("textbox", { name: "عنوان کارت" }), {
+      target: { value: "کارت ذخیره‌نشده" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "ثبت کارت" }));
+
+    expect(await screen.findByText("Save failed")).toBeTruthy();
+    expect(screen.queryByText("کارت ذخیره‌نشده")).toBeNull();
+  });
+
+  it("adds a column and scrolls the board after it is saved", async () => {
+    vi.stubGlobal("crypto", { randomUUID: () => "new-column-id" });
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+    await renderBoard();
     const board = screen.getByTestId("board-columns");
     const scrollTo = vi.fn();
     Object.defineProperty(board, "scrollTo", { value: scrollTo });
@@ -106,16 +226,15 @@ describe("Kanban board", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /^افزودن$/ }));
 
-    expect(screen.getAllByTestId(/^kanban-column-/)).toHaveLength(6);
-    expect(screen.getByTestId("kanban-column-new-column-id")).toBeTruthy();
+    expect(await screen.findByTestId("kanban-column-new-column-id")).toBeTruthy();
     expect(scrollTo).toHaveBeenCalledWith({
       left: -board.scrollWidth,
       behavior: "smooth",
     });
   });
 
-  it("renames a column", () => {
-    render(<Home />);
+  it("renames a column through the board API", async () => {
+    await renderBoard();
     const column = screen.getByTestId("kanban-column-ideas");
 
     fireEvent.click(
@@ -130,12 +249,12 @@ describe("Kanban board", () => {
     fireEvent.submit(form);
 
     expect(
-      within(column).getByRole("heading", { name: "ایده‌های تازه" }),
+      await within(column).findByRole("heading", { name: "ایده‌های تازه" }),
     ).toBeTruthy();
   });
 
-  it("cancels a column rename with Escape", () => {
-    render(<Home />);
+  it("cancels a column rename with Escape", async () => {
+    await renderBoard();
     const column = screen.getByTestId("kanban-column-ideas");
 
     fireEvent.click(
@@ -150,5 +269,17 @@ describe("Kanban board", () => {
     expect(
       within(column).getByRole("heading", { name: "ایده‌ها" }),
     ).toBeTruthy();
+  });
+
+  it("revokes the session and hides the board on logout", async () => {
+    await renderBoard();
+
+    fireEvent.click(screen.getByRole("button", { name: "خروج" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "ورود به فضای کاری" }),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("board-columns")).toBeNull();
+    expect(apiMocks.logout).toHaveBeenCalledOnce();
   });
 });

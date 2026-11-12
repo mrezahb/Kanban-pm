@@ -1,6 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000";
+const externalBaseUrl =
+  process.env.PLAYWRIGHT_BASE_URL ??
+  process.env.PLAYWRIGHT_INTEGRATION_URL;
+const baseURL = externalBaseUrl ?? "http://127.0.0.1:3000";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -16,7 +19,7 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], channel: "msedge" },
     },
   ],
-  webServer: process.env.PLAYWRIGHT_BASE_URL
+  webServer: externalBaseUrl
     ? undefined
     : {
         command: "npm run dev -- --hostname 127.0.0.1",

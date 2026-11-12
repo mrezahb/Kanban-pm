@@ -1,10 +1,76 @@
 import { expect, test } from "@playwright/test";
+import { initialBoard } from "../src/lib/board";
 
 test.beforeEach(async ({ page }) => {
+  let authenticated = false;
+  let board = {
+    id: "board-id",
+    title: "تختهٔ تیم محصول",
+    columns: structuredClone(initialBoard),
+  };
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    const json = (status: number, body: unknown) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+
+    if (pathname === "/api/auth/me" && request.method() === "GET") {
+      return authenticated
+        ? json(200, { id: "user-id", username: "user" })
+        : json(401, { detail: "Unauthorized" });
+    }
+
+    if (pathname === "/api/auth/login" && request.method() === "POST") {
+      const credentials = request.postDataJSON() as {
+        username: string;
+        password: string;
+      };
+      if (
+        credentials.username !== "user" ||
+        credentials.password !== "password"
+      ) {
+        return json(401, { detail: "Invalid username or password" });
+      }
+      authenticated = true;
+      return json(200, { id: "user-id", username: "user" });
+    }
+
+    if (pathname === "/api/auth/logout" && request.method() === "POST") {
+      authenticated = false;
+      return json(200, { status: "ok" });
+    }
+
+    if (pathname === "/api/board") {
+      if (!authenticated) return json(401, { detail: "Unauthorized" });
+      if (request.method() === "GET") return json(200, board);
+      if (request.method() === "PUT") {
+        const update = request.postDataJSON() as {
+          columns: typeof board.columns;
+        };
+        board = { ...board, columns: update.columns };
+        return json(200, board);
+      }
+    }
+
+    return json(404, { detail: "Not found" });
+  });
+
   await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "ورود به فضای کاری" }),
+  ).toBeVisible();
+  await page.getByLabel("نام کاربری").fill("user");
+  await page.getByLabel("گذرواژه").fill("password");
+  await page.getByRole("button", { name: "ورود" }).click();
+  await expect(page.getByRole("heading", { name: "تختهٔ تیم محصول" })).toBeVisible();
 });
 
-test("shows the sample board in Persian with exactly five columns", async ({
+test("shows the saved Persian board with exactly five columns", async ({
   page,
 }) => {
   await expect(page.locator("html")).toHaveAttribute("lang", "fa");
@@ -216,4 +282,24 @@ test("reduces card transition duration when reduced motion is requested", async 
     Number.parseFloat(getComputedStyle(element).transitionDuration),
   );
   expect(reducedDuration).toBeLessThan(0.001);
+});
+
+test("reloads the persisted board and blocks access after logout", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "افزودن کارت به ایده‌ها" }).click();
+  await page.getByLabel("عنوان کارت").fill("کارت ماندگار");
+  await page.getByRole("button", { name: "ثبت کارت" }).click();
+  await expect(page.getByText("کارت ماندگار")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText("کارت ماندگار")).toBeVisible();
+  await page.getByRole("button", { name: "خروج" }).click();
+  await expect(
+    page.getByRole("heading", { name: "ورود به فضای کاری" }),
+  ).toBeVisible();
+  const unauthenticatedStatus = await page.evaluate(async () =>
+    (await fetch("/api/board")).status,
+  );
+  expect(unauthenticatedStatus).toBe(401);
 });
