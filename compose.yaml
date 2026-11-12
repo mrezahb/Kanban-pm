@@ -1,0 +1,17 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      DATABASE_PATH: /data/kanban.sqlite3
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      STATIC_DIR: /app/frontend
+    volumes:
+      - kanban_data:/data
+    restart: unless-stopped
+
+volumes:
+  kanban_data:

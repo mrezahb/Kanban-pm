@@ -173,3 +173,9 @@ cython_debug/
 .pypirc
 
 .DS_Store
+
+# Local application data and generated frontend output
+/data/
+/frontend/.next/
+/frontend/out/
+/backend/.venv/
