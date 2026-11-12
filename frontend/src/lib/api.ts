@@ -11,6 +11,16 @@ export interface BoardResponse {
   columns: Board;
 }
 
+export interface ChatHistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AssistantChatResponse {
+  reply: string;
+  board_changed: boolean;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -78,5 +88,15 @@ export function saveBoard(columns: Board): Promise<BoardResponse> {
   return request<BoardResponse>("/api/board", {
     method: "PUT",
     body: JSON.stringify({ columns }),
+  });
+}
+
+export function sendAssistantMessage(
+  message: string,
+  history: ChatHistoryMessage[],
+): Promise<AssistantChatResponse> {
+  return request<AssistantChatResponse>("/api/assistant/chat", {
+    method: "POST",
+    body: JSON.stringify({ message, history }),
   });
 }

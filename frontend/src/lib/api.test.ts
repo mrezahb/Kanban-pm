@@ -6,6 +6,7 @@ import {
   login,
   logout,
   saveBoard,
+  sendAssistantMessage,
 } from "./api";
 import type { Board } from "./board";
 
@@ -80,6 +81,28 @@ describe("API client", () => {
       expect.objectContaining({
         method: "PUT",
         body: JSON.stringify({ columns }),
+      }),
+    );
+  });
+
+  it("sends chat history and the current message to the authenticated API", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ reply: "کارت ایجاد شد.", board_changed: true }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const history = [{ role: "user" as const, content: "سلام" }];
+
+    await expect(sendAssistantMessage("یک کارت بساز", history)).resolves.toEqual({
+      reply: "کارت ایجاد شد.",
+      board_changed: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assistant/chat",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ message: "یک کارت بساز", history }),
+        credentials: "same-origin",
       }),
     );
   });

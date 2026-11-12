@@ -45,6 +45,32 @@ test.beforeEach(async ({ page }) => {
       return json(200, { status: "ok" });
     }
 
+    if (pathname === "/api/assistant/chat" && request.method() === "POST") {
+      if (!authenticated) return json(401, { detail: "Unauthorized" });
+      board = {
+        ...board,
+        columns: board.columns.map((column, index) =>
+          index === 0
+            ? {
+                ...column,
+                cards: [
+                  ...column.cards,
+                  {
+                    id: "assistant-e2e-card",
+                    title: "کارت ساخته‌شده با دستیار",
+                    details: "در برد ذخیره شده",
+                  },
+                ],
+              }
+            : column,
+        ),
+      };
+      return json(200, {
+        reply: "کارت را در ستون ایده‌ها ایجاد کردم.",
+        board_changed: true,
+      });
+    }
+
     if (pathname === "/api/board") {
       if (!authenticated) return json(401, { detail: "Unauthorized" });
       if (request.method() === "GET") return json(200, board);
@@ -86,6 +112,46 @@ test("shows the saved Persian board with exactly five columns", async ({
   await expect(page.getByRole("heading", { name: "تختهٔ تیم محصول" })).toBeVisible();
   await expect(page.getByTestId(/^kanban-column-/)).toHaveCount(5);
   await expect(page.getByText("بازنویسی متن صفحهٔ اصلی")).toBeVisible();
+});
+
+test("assistant chat creates a card and refreshes the board", async ({
+  page,
+}) => {
+  const panel = page.getByRole("region", {
+    name: "دستیار هوش مصنوعی",
+  });
+  await expect(panel).toBeVisible();
+  await page.getByLabel("پیام به دستیار").fill("یک کارت جدید بساز");
+
+  const requestPromise = page.waitForRequest((request) =>
+    request.url().endsWith("/api/assistant/chat"),
+  );
+  await panel.getByRole("button", { name: "ارسال پیام" }).click();
+  const request = await requestPromise;
+
+  await expect(panel.getByText("کارت را در ستون ایده‌ها ایجاد کردم.")).toBeVisible();
+  await expect(panel.getByText("تغییرها در برد ذخیره شدند")).toBeVisible();
+  await expect(page.getByTestId("kanban-card-assistant-e2e-card")).toBeVisible();
+  expect(request.postDataJSON()).toEqual({
+    message: "یک کارت جدید بساز",
+    history: [],
+  });
+});
+
+test("opens the assistant sidebar on a small screen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole("button", { name: "باز کردن گفت‌وگو با دستیار" })
+    .click();
+
+  await expect(
+    page.getByRole("region", { name: "دستیار هوش مصنوعی" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("پیام به دستیار")).toBeVisible();
+  await page.getByRole("button", { name: "بستن گفت‌وگو با دستیار" }).first().click();
+  await expect(
+    page.getByRole("region", { name: "دستیار هوش مصنوعی" }),
+  ).toBeHidden();
 });
 
 test("adds and removes a card", async ({ page }) => {

@@ -33,6 +33,7 @@ const apiMocks = vi.hoisted(() => {
     login: vi.fn(),
     logout: vi.fn(),
     saveBoard: vi.fn(),
+    sendAssistantMessage: vi.fn(),
   };
 });
 
@@ -91,6 +92,10 @@ beforeEach(() => {
   apiMocks.saveBoard.mockImplementation(async (columns) => {
     savedBoard = { ...savedBoard, columns };
     return savedBoard;
+  });
+  apiMocks.sendAssistantMessage.mockResolvedValue({
+    reply: "پاسخ دستیار",
+    board_changed: false,
   });
 });
 
@@ -281,5 +286,177 @@ describe("Kanban board authentication and persistence", () => {
     ).toBeTruthy();
     expect(screen.queryByTestId("board-columns")).toBeNull();
     expect(apiMocks.logout).toHaveBeenCalledOnce();
+  });
+
+  it("sends a message, shows the reply, and includes prior chat history", async () => {
+    await renderBoard();
+    const composer = screen.getByRole("textbox", { name: "پیام به دستیار" });
+
+    fireEvent.change(composer, { target: { value: "سلام" } });
+    fireEvent.click(screen.getByRole("button", { name: "ارسال پیام" }));
+
+    expect(await screen.findByText("پاسخ دستیار")).toBeTruthy();
+    expect(apiMocks.sendAssistantMessage).toHaveBeenNthCalledWith(
+      1,
+      "سلام",
+      [],
+    );
+    fireEvent.change(composer, { target: { value: "وضعیت برد چیست؟" } });
+    const sendButton = screen.getByRole("button", { name: "ارسال پیام" });
+    await waitFor(() => expect((sendButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(sendButton);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("پاسخ دستیار")).toHaveLength(2),
+    );
+    expect(apiMocks.sendAssistantMessage).toHaveBeenNthCalledWith(
+      2,
+      "وضعیت برد چیست؟",
+      [
+        { role: "user", content: "سلام" },
+        { role: "assistant", content: "پاسخ دستیار" },
+      ],
+    );
+    expect(apiMocks.getBoard).toHaveBeenCalledOnce();
+  });
+
+  it("shows a pending state while waiting for the assistant", async () => {
+    apiMocks.sendAssistantMessage.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    await renderBoard();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "پیام به دستیار" }), {
+      target: { value: "یک کارت بساز" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "ارسال پیام" }));
+
+    expect(screen.getByText("در حال دریافت پاسخ از دستیار...")).toBeTruthy();
+    expect(
+      (screen.getByRole("button", {
+        name: "ارسال پیام",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("refreshes the saved board after the assistant changes it", async () => {
+    apiMocks.sendAssistantMessage.mockImplementationOnce(async () => {
+      savedBoard = {
+        ...savedBoard,
+        columns: savedBoard.columns.map((column) =>
+          column.id === "ideas"
+            ? {
+                ...column,
+                cards: [
+                  ...column.cards,
+                  {
+                    id: "assistant-card",
+                    title: "کارت ساخته‌شده با دستیار",
+                    details: "در برد ذخیره شده",
+                  },
+                ],
+              }
+            : column,
+        ),
+      };
+      return { reply: "کارت را ایجاد کردم.", board_changed: true };
+    });
+    await renderBoard();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "پیام به دستیار" }), {
+      target: { value: "یک کارت بساز" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "ارسال پیام" }));
+
+    expect(await screen.findByTestId("kanban-card-assistant-card")).toBeTruthy();
+    expect(await screen.findByText("تغییرها در برد ذخیره شدند")).toBeTruthy();
+    expect(apiMocks.getBoard).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows assistant errors and keeps the failed message available to retry", async () => {
+    apiMocks.sendAssistantMessage.mockRejectedValueOnce(
+      new apiMocks.ApiError("Invalid assistant response", 502),
+    );
+    await renderBoard();
+    const composer = screen.getByRole("textbox", { name: "پیام به دستیار" });
+
+    fireEvent.change(composer, { target: { value: "یک کارت بساز" } });
+    fireEvent.click(screen.getByRole("button", { name: "ارسال پیام" }));
+
+    expect(
+      await screen.findByText(
+        "پاسخ دستیار معتبر نبود یا سرویس موقتاً در دسترس نیست.",
+      ),
+    ).toBeTruthy();
+    expect((composer as HTMLTextAreaElement).value).toBe("یک کارت بساز");
+    expect(apiMocks.getBoard).toHaveBeenCalledOnce();
+  });
+
+  it("reports a failed board refresh and allows retrying it", async () => {
+    const refreshedBoard: BoardResponse = {
+      ...savedBoard,
+      columns: savedBoard.columns.map((column) =>
+        column.id === "ideas"
+          ? {
+              ...column,
+              cards: [
+                ...column.cards,
+                {
+                  id: "assistant-retry-card",
+                  title: "کارت پس از بارگیری دوباره",
+                  details: "",
+                },
+              ],
+            }
+          : column,
+      ),
+    };
+    apiMocks.getBoard.mockReset();
+    apiMocks.getBoard
+      .mockResolvedValueOnce(savedBoard)
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(refreshedBoard);
+    apiMocks.sendAssistantMessage.mockResolvedValueOnce({
+      reply: "تغییر ذخیره شد.",
+      board_changed: true,
+    });
+    await renderBoard();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "پیام به دستیار" }), {
+      target: { value: "یک کارت بساز" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "ارسال پیام" }));
+
+    expect(
+      await screen.findByText(/تغییرها ذخیره شدند، اما دریافت برد به‌روز ناموفق بود/),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "بارگیری دوبارهٔ برد" }),
+    );
+
+    expect(
+      await screen.findByTestId("kanban-card-assistant-retry-card"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(/دریافت برد به‌روز ناموفق بود/),
+    ).toBeNull();
+    expect(apiMocks.getBoard).toHaveBeenCalledTimes(3);
+  });
+
+  it("opens and closes the assistant sidebar from the mobile launcher", async () => {
+    await renderBoard();
+    const sidebar = screen.getByRole("complementary");
+    const launcher = screen.getByRole("button", {
+      name: "باز کردن گفت‌وگو با دستیار",
+    });
+
+    fireEvent.click(launcher);
+
+    expect(launcher.getAttribute("aria-expanded")).toBe("true");
+    expect(sidebar.classList.contains("sidebar-open")).toBe(true);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "بستن گفت‌وگو با دستیار" })[1],
+    );
+    expect(sidebar.classList.contains("sidebar-open")).toBe(false);
   });
 });

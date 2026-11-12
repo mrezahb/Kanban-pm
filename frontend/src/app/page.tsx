@@ -27,13 +27,14 @@ import {
   Check,
   GripVertical,
   Inbox,
-  LayoutDashboard,
   Layers3,
   LogIn,
   LogOut,
   MoreHorizontal,
   Pencil,
   Plus,
+  Send,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import Image from "next/image";
@@ -64,12 +65,15 @@ import {
   login,
   logout,
   saveBoard,
+  sendAssistantMessage,
+  type ChatHistoryMessage,
   type User,
 } from "@/lib/api";
 
 const columnDropPrefix = "column:";
 
 type AuthStatus = "loading" | "anonymous" | "authenticated" | "error";
+type ChatMessage = ChatHistoryMessage & { boardChanged?: boolean };
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -77,6 +81,22 @@ function getErrorMessage(error: unknown): string {
   if (error instanceof TypeError) return "ارتباط با سرور برقرار نشد.";
   if (error instanceof Error) return error.message;
   return "خطای غیرمنتظره‌ای رخ داد.";
+}
+
+function getAssistantErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 401) return "نشست شما پایان یافته است. دوباره وارد شوید.";
+    if (error.status === 422) {
+      return "دستیار به کارت یا ستونی اشاره کرد که دیگر در برد نیست.";
+    }
+    if (error.status === 502) {
+      return "پاسخ دستیار معتبر نبود یا سرویس موقتاً در دسترس نیست.";
+    }
+    if (error.status >= 500) {
+      return "ذخیرهٔ تغییرهای دستیار ناموفق بود. برد بدون تغییر باقی ماند.";
+    }
+  }
+  return getErrorMessage(error);
 }
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -110,6 +130,14 @@ export default function Home() {
   const [isSaving, setIsSaving] = useState(false);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [isAddingColumn, setIsAddingColumn] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [isChatPending, setIsChatPending] = useState(false);
+  const [chatProgress, setChatProgress] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [canRetryBoardRefresh, setCanRetryBoardRefresh] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const boardRef = useRef<Board>([]);
   const savingRef = useRef(false);
   const boardColumnsRef = useRef<HTMLDivElement>(null);
@@ -131,6 +159,8 @@ export default function Home() {
         setBoard(savedBoard.columns);
         boardRef.current = savedBoard.columns;
         setBoardTitle(savedBoard.title);
+        setChatMessages([]);
+        setChatDraft("");
         setAuthStatus("authenticated");
       } catch (error) {
         if (!active) return;
@@ -172,6 +202,11 @@ export default function Home() {
       setBoard(savedBoard.columns);
       boardRef.current = savedBoard.columns;
       setBoardTitle(savedBoard.title);
+      setChatMessages([]);
+      setChatDraft("");
+      setChatError(null);
+      setCanRetryBoardRefresh(false);
+      setIsMobileSidebarOpen(false);
       setAuthStatus("authenticated");
     } catch (error) {
       setLoginError(
@@ -185,7 +220,7 @@ export default function Home() {
   }
 
   async function handleLogout() {
-    if (savingRef.current) return;
+    if (savingRef.current || isChatPending) return;
     setBoardError(null);
     setIsLogoutPending(true);
     try {
@@ -194,6 +229,11 @@ export default function Home() {
       setBoard([]);
       boardRef.current = [];
       setLoginError(null);
+      setChatMessages([]);
+      setChatDraft("");
+      setChatError(null);
+      setCanRetryBoardRefresh(false);
+      setIsMobileSidebarOpen(false);
       setAuthStatus("anonymous");
     } catch (error) {
       setBoardError(getErrorMessage(error));
@@ -215,11 +255,7 @@ export default function Home() {
       return true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        setCurrentUser(null);
-        setBoard([]);
-        boardRef.current = [];
-        setLoginError("نشست شما پایان یافته است. دوباره وارد شوید.");
-        setAuthStatus("anonymous");
+        expireAssistantSession();
       } else {
         setBoardError(getErrorMessage(error));
       }
@@ -313,6 +349,102 @@ export default function Home() {
     return saved;
   }
 
+  function expireAssistantSession() {
+    setCurrentUser(null);
+    setBoard([]);
+    boardRef.current = [];
+    setChatMessages([]);
+    setChatDraft("");
+    setChatError(null);
+    setCanRetryBoardRefresh(false);
+    setIsMobileSidebarOpen(false);
+    setLoginError("نشست شما پایان یافته است. دوباره وارد شوید.");
+    setAuthStatus("anonymous");
+  }
+
+  async function handleAssistantSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = chatDraft.trim();
+    if (!message || isChatPending || isSaving) return;
+
+    const history: ChatHistoryMessage[] = chatMessages
+      .slice(-20)
+      .map(({ role, content }) => ({ role, content }));
+    setPendingMessage(message);
+    setChatError(null);
+    setCanRetryBoardRefresh(false);
+    setChatProgress("در حال دریافت پاسخ از دستیار...");
+    setIsChatPending(true);
+
+    try {
+      const response = await sendAssistantMessage(message, history);
+      setChatMessages((current) => [
+        ...current,
+        { role: "user", content: message },
+        {
+          role: "assistant",
+          content: response.reply,
+          boardChanged: response.board_changed,
+        },
+      ]);
+      setChatDraft("");
+
+      if (response.board_changed) {
+        setChatProgress("در حال دریافت برد به‌روز...");
+        try {
+          const savedBoard = await getBoard();
+          setBoard(savedBoard.columns);
+          boardRef.current = savedBoard.columns;
+          setBoardTitle(savedBoard.title);
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 401) {
+            expireAssistantSession();
+          } else {
+            setChatError(
+              `تغییرها ذخیره شدند، اما دریافت برد به‌روز ناموفق بود. ${getErrorMessage(error)}`,
+            );
+            setCanRetryBoardRefresh(true);
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        expireAssistantSession();
+      } else {
+        setChatError(getAssistantErrorMessage(error));
+      }
+    } finally {
+      setPendingMessage(null);
+      setIsChatPending(false);
+      setChatProgress(null);
+    }
+  }
+
+  async function handleRetryBoardRefresh() {
+    setChatError(null);
+    setCanRetryBoardRefresh(false);
+    setChatProgress("در حال دریافت برد ذخیره‌شده...");
+    setIsChatPending(true);
+    try {
+      const savedBoard = await getBoard();
+      setBoard(savedBoard.columns);
+      boardRef.current = savedBoard.columns;
+      setBoardTitle(savedBoard.title);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        expireAssistantSession();
+      } else {
+        setChatError(
+          `تغییرها ذخیره شدند، اما دریافت برد به‌روز ناموفق بود. ${getErrorMessage(error)}`,
+        );
+        setCanRetryBoardRefresh(true);
+      }
+    } finally {
+      setIsChatPending(false);
+      setChatProgress(null);
+    }
+  }
+
   if (authStatus === "loading") {
     return <StatusScreen message="در حال بررسی نشست و بارگذاری برد..." />;
   }
@@ -368,6 +500,21 @@ export default function Home() {
           <strong>استودیو محصول</strong>
         </div>
         <div className="topbar-actions">
+          <button
+            className="assistant-launcher"
+            type="button"
+            aria-controls="assistant-sidebar"
+            aria-expanded={isMobileSidebarOpen}
+            aria-label={
+              isMobileSidebarOpen
+                ? "بستن گفت‌وگو با دستیار"
+                : "باز کردن گفت‌وگو با دستیار"
+            }
+            onClick={() => setIsMobileSidebarOpen((open) => !open)}
+          >
+            <Sparkles size={16} aria-hidden="true" />
+            <span>دستیار</span>
+          </button>
           <span className="topbar-icon" aria-label="راهنما">
             <CircleHelp size={17} />
           </span>
@@ -381,7 +528,7 @@ export default function Home() {
             className="logout-button"
             type="button"
             onClick={() => void handleLogout()}
-            disabled={isLogoutPending || isSaving}
+            disabled={isLogoutPending || isSaving || isChatPending}
           >
             <LogOut size={15} />
             خروج
@@ -390,7 +537,19 @@ export default function Home() {
       </header>
 
       <div className="workspace-shell">
-        <aside className="sidebar" dir="rtl">
+        {isMobileSidebarOpen && (
+          <button
+            className="sidebar-backdrop"
+            type="button"
+            aria-label="بستن گفت‌وگو با دستیار"
+            onClick={() => setIsMobileSidebarOpen(false)}
+          />
+        )}
+        <aside
+          className={`sidebar${isMobileSidebarOpen ? " sidebar-open" : ""}`}
+          dir="rtl"
+          id="assistant-sidebar"
+        >
           <div className="sidebar-workspace">
             <span className="sidebar-workspace-icon">
               <Layers3 size={17} />
@@ -411,13 +570,113 @@ export default function Home() {
             <span className="sidebar-link-count">{countCards(board)}</span>
           </Link>
 
-          <div className="sidebar-note">
-            <div className="sidebar-note-mark">
-              <LayoutDashboard size={16} />
+          <section
+            className="assistant-panel"
+            aria-labelledby="assistant-panel-title"
+          >
+            <header className="assistant-header">
+              <span className="assistant-header-icon" aria-hidden="true">
+                <Sparkles size={16} />
+              </span>
+              <div>
+                <h2 id="assistant-panel-title">دستیار هوش مصنوعی</h2>
+                <p>گفت‌وگو دربارهٔ برد</p>
+              </div>
+            </header>
+            <div
+              className="assistant-messages"
+              role="log"
+              aria-label="تاریخچهٔ گفت‌وگو"
+              aria-live="polite"
+              aria-relevant="additions text"
+            >
+              {chatMessages.length === 0 && !pendingMessage && (
+                <p className="assistant-message assistant-message-assistant">
+                  سلام! می‌توانید دربارهٔ برد بپرسید یا از من بخواهید کارت‌ها را
+                  ایجاد، ویرایش یا جابه‌جا کنم.
+                </p>
+              )}
+              {chatMessages.map((message, index) => (
+                <div
+                  className={`assistant-message assistant-message-${message.role}`}
+                  key={`${message.role}-${index}`}
+                  dir="auto"
+                >
+                  <p>{message.content}</p>
+                  {message.boardChanged && (
+                    <span className="assistant-saved-status">
+                      <Check size={12} aria-hidden="true" />
+                      تغییرها در برد ذخیره شدند
+                    </span>
+                  )}
+                </div>
+              ))}
+              {pendingMessage && (
+                <p
+                  className="assistant-message assistant-message-user"
+                  dir="auto"
+                >
+                  {pendingMessage}
+                </p>
+              )}
+              {chatProgress && (
+                <p className="assistant-progress" role="status">
+                  {chatProgress}
+                </p>
+              )}
             </div>
-            <strong>قدم بعدی، همین‌جاست</strong>
-            <p>کارت‌ها را بین ستون‌ها جابه‌جا کنید و پیشرفت تیم را ببینید.</p>
-          </div>
+            {chatError && (
+              <div className="assistant-error" role="alert">
+                <p>{chatError}</p>
+                {canRetryBoardRefresh && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRetryBoardRefresh()}
+                    disabled={isChatPending}
+                  >
+                    بارگیری دوبارهٔ برد
+                  </button>
+                )}
+              </div>
+            )}
+            <form className="assistant-composer" onSubmit={handleAssistantSubmit}>
+              <label className="visually-hidden" htmlFor="assistant-message">
+                پیام به دستیار
+              </label>
+              <textarea
+                id="assistant-message"
+                aria-label="پیام به دستیار"
+                placeholder="پیام خود را بنویسید..."
+                value={chatDraft}
+                maxLength={4000}
+                rows={2}
+                onChange={(event) => setChatDraft(event.target.value)}
+                required
+                disabled={isChatPending || isSaving || isLogoutPending}
+              />
+              <button
+                type="submit"
+                aria-label="ارسال پیام"
+                disabled={
+                  !chatDraft.trim() ||
+                  isChatPending ||
+                  isSaving ||
+                  isLogoutPending
+                }
+              >
+                {isChatPending ? (
+                  <span className="assistant-send-pending" aria-hidden="true">
+                    …
+                  </span>
+                ) : (
+                  <Send size={15} aria-hidden="true" />
+                )}
+              </button>
+            </form>
+            <p className="assistant-footnote">
+              تغییرهای کارت پس از پاسخ معتبر ذخیره می‌شوند.
+            </p>
+          </section>
 
           <div className="sidebar-bottom">
             <span className="sidebar-bottom-dot" />
