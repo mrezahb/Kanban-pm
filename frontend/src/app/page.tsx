@@ -50,6 +50,7 @@ import {
   initialBoard,
   moveCard,
   renameColumn,
+  updateCard,
   type Board,
   type Card,
   type Column,
@@ -126,6 +127,12 @@ export default function Home() {
         title,
         details,
       }),
+    );
+  }
+
+  function handleUpdateCard(cardId: string, title: string, details: string) {
+    setBoard((currentBoard) =>
+      updateCard(currentBoard, cardId, { title, details }),
     );
   }
 
@@ -293,6 +300,7 @@ export default function Home() {
                     key={column.id}
                     column={column}
                     onAddCard={handleAddCard}
+                    onUpdateCard={handleUpdateCard}
                     onDeleteCard={(cardId) =>
                       setBoard((currentBoard) =>
                         deleteCard(currentBoard, cardId),
@@ -383,6 +391,7 @@ function AddColumnForm({
 interface KanbanColumnProps {
   column: Column;
   onAddCard: (columnId: string, title: string, details: string) => void;
+  onUpdateCard: (cardId: string, title: string, details: string) => void;
   onDeleteCard: (cardId: string) => void;
   onRename: (name: string) => void;
 }
@@ -390,6 +399,7 @@ interface KanbanColumnProps {
 function KanbanColumn({
   column,
   onAddCard,
+  onUpdateCard,
   onDeleteCard,
   onRename,
 }: KanbanColumnProps) {
@@ -475,6 +485,9 @@ function KanbanColumn({
             <SortableCard
               key={card.id}
               card={card}
+              onEdit={(title, details) =>
+                onUpdateCard(card.id, title, details)
+              }
               onDelete={() => onDeleteCard(card.id)}
             />
           ))}
@@ -485,7 +498,8 @@ function KanbanColumn({
       </SortableContext>
 
       {isAddingCard ? (
-        <AddCardForm
+        <CardForm
+          submitLabel="ثبت کارت"
           onSubmit={(title, details) => {
             onAddCard(column.id, title, details);
             setIsAddingCard(false);
@@ -507,14 +521,23 @@ function KanbanColumn({
   );
 }
 
-interface AddCardFormProps {
+interface CardFormProps {
+  initialTitle?: string;
+  initialDetails?: string;
+  submitLabel: string;
   onSubmit: (title: string, details: string) => void;
   onCancel: () => void;
 }
 
-function AddCardForm({ onSubmit, onCancel }: AddCardFormProps) {
-  const [title, setTitle] = useState("");
-  const [details, setDetails] = useState("");
+function CardForm({
+  initialTitle = "",
+  initialDetails = "",
+  submitLabel,
+  onSubmit,
+  onCancel,
+}: CardFormProps) {
+  const [title, setTitle] = useState(initialTitle);
+  const [details, setDetails] = useState(initialDetails);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -524,7 +547,11 @@ function AddCardForm({ onSubmit, onCancel }: AddCardFormProps) {
   }
 
   return (
-    <form className="add-card-form" onSubmit={handleSubmit}>
+    <form
+      className={initialTitle ? "edit-card-form" : "add-card-form"}
+      aria-label={initialTitle ? `ویرایش کارت ${initialTitle}` : undefined}
+      onSubmit={handleSubmit}
+    >
       <input
         aria-label="عنوان کارت"
         className="form-field"
@@ -544,7 +571,7 @@ function AddCardForm({ onSubmit, onCancel }: AddCardFormProps) {
       <div className="form-actions">
         <button className="submit-button" type="submit">
           <Check size={14} />
-          ثبت کارت
+          {submitLabel}
         </button>
         <button className="cancel-button" type="button" onClick={onCancel}>
           انصراف
@@ -556,10 +583,11 @@ function AddCardForm({ onSubmit, onCancel }: AddCardFormProps) {
 
 interface SortableCardProps {
   card: Card;
+  onEdit: (title: string, details: string) => void;
   onDelete: () => void;
 }
 
-function SortableCard({ card, onDelete }: SortableCardProps) {
+function SortableCard({ card, onEdit, onDelete }: SortableCardProps) {
   const {
     attributes,
     listeners,
@@ -568,6 +596,7 @@ function SortableCard({ card, onDelete }: SortableCardProps) {
     transition,
     isDragging,
   } = useSortable({ id: card.id });
+  const [isEditing, setIsEditing] = useState(false);
 
   return (
     <article
@@ -579,29 +608,55 @@ function SortableCard({ card, onDelete }: SortableCardProps) {
       }}
       data-testid={`kanban-card-${card.id}`}
     >
-      <div className="card-actions">
-        <button
-          className="icon-button drag-handle"
-          type="button"
-          aria-label={`جابجایی کارت ${card.title}`}
-          data-testid="drag-handle"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical size={16} />
-        </button>
-        <button
-          className="icon-button delete-button"
-          type="button"
-          aria-label={`حذف کارت ${card.title}`}
-          title="حذف کارت"
-          onClick={onDelete}
-        >
-          <Trash2 size={14} />
-        </button>
-      </div>
-      <h4 className="card-title">{card.title}</h4>
-      {card.details && <p className="card-details">{card.details}</p>}
+      {isEditing ? (
+        <CardForm
+          initialTitle={card.title}
+          initialDetails={card.details}
+          submitLabel="ذخیره تغییرات"
+          onSubmit={(title, details) => {
+            onEdit(title, details);
+            setIsEditing(false);
+          }}
+          onCancel={() => setIsEditing(false)}
+        />
+      ) : (
+        <>
+          <div className="card-actions">
+            <button
+              className="icon-button drag-handle"
+              type="button"
+              aria-label={`جابجایی کارت ${card.title}`}
+              data-testid="drag-handle"
+              {...attributes}
+              {...listeners}
+            >
+              <GripVertical size={16} />
+            </button>
+            <div className="card-action-buttons">
+              <button
+                className="icon-button edit-button"
+                type="button"
+                aria-label={`ویرایش کارت ${card.title}`}
+                title="ویرایش کارت"
+                onClick={() => setIsEditing(true)}
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                className="icon-button delete-button"
+                type="button"
+                aria-label={`حذف کارت ${card.title}`}
+                title="حذف کارت"
+                onClick={onDelete}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+          <h4 className="card-title">{card.title}</h4>
+          {card.details && <p className="card-details">{card.details}</p>}
+        </>
+      )}
     </article>
   );
 }

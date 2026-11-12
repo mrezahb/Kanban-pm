@@ -114,6 +114,33 @@ export function addCard(board: Board, columnId: string, card: Card): Board {
   );
 }
 
+export function updateCard(
+  board: Board,
+  cardId: string,
+  updates: Pick<Card, "title" | "details">,
+): Board {
+  const title = updates.title.trim();
+  if (!title) return board;
+
+  const column = board.find((item) =>
+    item.cards.some((card) => card.id === cardId),
+  );
+  if (!column) return board;
+
+  return board.map((item) =>
+    item.id === column.id
+      ? {
+          ...item,
+          cards: item.cards.map((card) =>
+            card.id === cardId
+              ? { ...card, title, details: updates.details.trim() }
+              : card,
+          ),
+        }
+      : item,
+  );
+}
+
 export function deleteCard(board: Board, cardId: string): Board {
   if (!board.some((column) => column.cards.some((card) => card.id === cardId))) {
     return board;

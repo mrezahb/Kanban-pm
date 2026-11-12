@@ -7,6 +7,7 @@ import {
   initialBoard,
   moveCard,
   renameColumn,
+  updateCard,
   type Board,
   type Card,
 } from "./board";
@@ -99,6 +100,34 @@ describe("card updates", () => {
     const board = createBoard();
 
     expect(addCard(board, "missing", card)).toEqual(board);
+  });
+
+  it("updates a card's title and details without mutating the board", () => {
+    const board = createBoard();
+    const updated = updateCard(board, "a", {
+      title: "  عنوان جدید  ",
+      details: "  جزئیات جدید  ",
+    });
+
+    expect(updated[0].cards[0]).toEqual({
+      id: "a",
+      title: "عنوان جدید",
+      details: "جزئیات جدید",
+    });
+    expect(board[0].cards[0]).toEqual({
+      id: "a",
+      title: "الف",
+      details: "",
+    });
+  });
+
+  it("does not update a card with a blank title or unknown id", () => {
+    const board = createBoard();
+
+    expect(updateCard(board, "a", { title: " ", details: "new" })).toBe(board);
+    expect(
+      updateCard(board, "missing", { title: "new", details: "new" }),
+    ).toBe(board);
   });
 
   it("deletes a card and leaves other cards intact", () => {

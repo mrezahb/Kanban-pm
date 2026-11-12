@@ -35,6 +35,27 @@ test("adds and removes a card", async ({ page }) => {
   await expect(page.getByText("آزمون جریان جدید")).toHaveCount(0);
 });
 
+test("edits a card and can cancel a later edit", async ({ page }) => {
+  const card = page.getByTestId("kanban-card-brand-story");
+  await card.getByRole("button", { name: "ویرایش کارت روایت تازه برای برند" }).click();
+
+  const title = page.getByRole("textbox", { name: "عنوان کارت" });
+  const details = page.getByRole("textbox", { name: "جزئیات کارت" });
+  await title.fill("روایت بازبینی‌شده");
+  await details.fill("جزئیات ویرایش‌شده");
+  await page.getByRole("button", { name: "ذخیره تغییرات" }).click();
+
+  await expect(card.getByRole("heading", { name: "روایت بازبینی‌شده" })).toBeVisible();
+  await expect(card.getByText("جزئیات ویرایش‌شده")).toBeVisible();
+
+  await card.getByRole("button", { name: "ویرایش کارت روایت بازبینی‌شده" }).click();
+  await page.getByRole("textbox", { name: "عنوان کارت" }).fill("تغییر لغوشده");
+  await page.getByRole("button", { name: "انصراف" }).click();
+
+  await expect(card.getByRole("heading", { name: "روایت بازبینی‌شده" })).toBeVisible();
+  await expect(card.getByText("تغییر لغوشده")).toHaveCount(0);
+});
+
 test("renames a column", async ({ page }) => {
   await page.getByRole("button", { name: "تغییر نام ستون ایده‌ها" }).click();
   const nameInput = page.getByRole("textbox", { name: "نام ستون" });
@@ -177,4 +198,22 @@ test("keeps the columns horizontally scrollable on a small screen", async ({
   }));
 
   expect(dimensions.scrollWidth).toBeGreaterThan(dimensions.clientWidth);
+});
+
+test("reduces card transition duration when reduced motion is requested", async ({
+  page,
+}) => {
+  const card = page.getByTestId("kanban-card-brand-story");
+
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const standardDuration = await card.evaluate((element) =>
+    Number.parseFloat(getComputedStyle(element).transitionDuration),
+  );
+  expect(standardDuration).toBeGreaterThan(0.001);
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const reducedDuration = await card.evaluate((element) =>
+    Number.parseFloat(getComputedStyle(element).transitionDuration),
+  );
+  expect(reducedDuration).toBeLessThan(0.001);
 });

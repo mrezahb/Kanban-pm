@@ -780,6 +780,12 @@ button:disabled {
   margin: -2px -3px 3px;
 }
 
+.card-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .drag-handle {
   color: #aab3bf;
   cursor: grab;
@@ -797,6 +803,11 @@ button:disabled {
 .delete-button:hover {
   color: #bc4552;
   background: #fff0f1;
+}
+
+.edit-button:hover {
+  color: var(--blue);
+  background: rgb(32 157 215 / 9%);
 }
 
 .card-title {
@@ -842,16 +853,27 @@ button:disabled {
   background: rgb(255 255 255 / 72%);
 }
 
-.add-card-form {
+.add-card-form,
+.edit-card-form {
   display: grid;
   flex: 0 0 auto;
   gap: 7px;
-  margin-top: 7px;
   padding: 8px;
   border: 1px solid #e0e5ec;
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 3px 8px rgb(21 42 70 / 7%);
+}
+
+.add-card-form {
+  margin-top: 7px;
+}
+
+.edit-card-form {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .form-field {
