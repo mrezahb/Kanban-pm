@@ -26,16 +26,20 @@ class OpenRouterResponseError(OpenRouterError):
     pass
 
 
-def complete_chat(messages: list[dict[str, str]]) -> str:
+def complete_chat(messages: list[dict[str, str]], *, json_mode: bool = False) -> str:
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise OpenRouterConfigurationError(
             "OPENROUTER_API_KEY is not configured."
         )
 
-    body = json.dumps(
-        {"model": OPENROUTER_MODEL, "messages": messages}
-    ).encode("utf-8")
+    payload: dict[str, object] = {
+        "model": OPENROUTER_MODEL,
+        "messages": messages,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    body = json.dumps(payload).encode("utf-8")
     request = Request(
         OPENROUTER_URL,
         data=body,

@@ -5,8 +5,12 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app import main
+from backend.app.assistant import AssistantResponseError
 from backend.app.database import Database, utc_timestamp
 from backend.app.main import SESSION_COOKIE_NAME, create_app
+from backend.app.openrouter import OpenRouterRequestError
+from backend.app.schemas import AssistantOutput
 from backend.app.security import hash_password, hash_session_token
 
 
@@ -306,3 +310,221 @@ def test_database_enforces_one_board_per_user(client: TestClient) -> None:
                 """,
                 (str(uuid4()), user_id, "Duplicate", utc_timestamp(), utc_timestamp()),
             )
+
+
+def test_assistant_chat_requires_a_valid_session(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Assistant must not be called without a session")
+
+    monkeypatch.setattr(main, "respond_to_chat", fail_if_called)
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "Hello", "history": []},
+    )
+
+    assert response.status_code == 401
+
+
+def test_assistant_text_reply_does_not_change_board(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    login(client)
+    board = client.get("/api/board").json()
+    captured: dict[str, object] = {}
+
+    def fake_response(board_data, message, history):
+        captured["board"] = board_data
+        captured["message"] = message
+        captured["history"] = history
+        return AssistantOutput(reply="Here is an answer.", actions=[])
+
+    monkeypatch.setattr(main, "respond_to_chat", fake_response)
+    response = client.post(
+        "/api/assistant/chat",
+        json={
+            "message": "How is the project going?",
+            "history": [{"role": "user", "content": "Hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "reply": "Here is an answer.",
+        "board_changed": False,
+    }
+    assert captured["board"] == board
+    assert captured["message"] == "How is the project going?"
+    assert len(captured["history"]) == 1
+    assert client.get("/api/board").json() == board
+
+
+def test_assistant_actions_are_validated_and_saved_without_losing_cards(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    login(client)
+    board = client.get("/api/board").json()
+    columns = [
+        {
+            "id": column["id"],
+            "name": column["name"],
+            "cards": [],
+        }
+        for column in board["columns"]
+    ]
+    columns[0]["cards"] = [
+        {"title": "Move me", "details": "Old details"},
+        {"title": "Keep me", "details": "Unaffected"},
+    ]
+    created = client.put("/api/board", json={"columns": columns})
+    assert created.status_code == 200
+    before = created.json()
+    moved_card = before["columns"][0]["cards"][0]
+    untouched_card = before["columns"][0]["cards"][1]
+
+    output = AssistantOutput(
+        reply="I updated and organized the cards.",
+        actions=[
+            {
+                "type": "edit_card",
+                "card_id": moved_card["id"],
+                "title": "Updated task",
+                "details": "New details",
+            },
+            {
+                "type": "move_card",
+                "card_id": moved_card["id"],
+                "column_id": before["columns"][1]["id"],
+            },
+            {
+                "type": "create_card",
+                "column_id": before["columns"][2]["id"],
+                "title": "New task",
+                "details": "Created by assistant",
+            },
+        ],
+    )
+    monkeypatch.setattr(main, "respond_to_chat", lambda *args: output)
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "Update and organize these tasks", "history": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "reply": "I updated and organized the cards.",
+        "board_changed": True,
+    }
+    saved = client.get("/api/board").json()
+    assert saved["columns"][0]["cards"] == [untouched_card]
+    assert saved["columns"][1]["cards"] == [
+        {
+            "id": moved_card["id"],
+            "title": "Updated task",
+            "details": "New details",
+        }
+    ]
+    assert saved["columns"][2]["cards"][0]["title"] == "New task"
+    assert saved["columns"][2]["cards"][0]["details"] == "Created by assistant"
+    assert saved["columns"][3:] == before["columns"][3:]
+
+
+def test_invalid_assistant_action_does_not_change_board(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    login(client)
+    board = client.get("/api/board").json()
+    before = client.get("/api/board").json()
+    monkeypatch.setattr(
+        main,
+        "respond_to_chat",
+        lambda *args: AssistantOutput(
+            reply="Updated.",
+            actions=[
+                {
+                    "type": "edit_card",
+                    "card_id": str(uuid4()),
+                    "title": "Not on this board",
+                }
+            ],
+        ),
+    )
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "Edit a card", "history": []},
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/board").json() == before
+    assert board == before
+
+
+@pytest.mark.parametrize(
+    ("failure", "detail"),
+    [
+        (OpenRouterRequestError("provider unavailable"), "service is unavailable"),
+        (AssistantResponseError("invalid output"), "invalid response"),
+    ],
+)
+def test_assistant_failures_are_not_reported_as_success(
+    client: TestClient,
+    monkeypatch,
+    failure: Exception,
+    detail: str,
+) -> None:
+    login(client)
+    before = client.get("/api/board").json()
+
+    def fail_response(*args):
+        raise failure
+
+    monkeypatch.setattr(main, "respond_to_chat", fail_response)
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "Update a card", "history": []},
+    )
+
+    assert response.status_code == 502
+    assert detail in response.json()["detail"]
+    assert client.get("/api/board").json() == before
+
+
+def test_assistant_save_failure_rolls_back_changes(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    login(client)
+    before = client.get("/api/board").json()
+    output = AssistantOutput(
+        reply="A card was created.",
+        actions=[
+            {
+                "type": "create_card",
+                "column_id": before["columns"][0]["id"],
+                "title": "Unsaved task",
+            }
+        ],
+    )
+    monkeypatch.setattr(main, "respond_to_chat", lambda *args: output)
+
+    def fail_save(*args):
+        raise sqlite3.OperationalError("disk unavailable")
+
+    monkeypatch.setattr(main, "_update_board", fail_save)
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "Create a task", "history": []},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Could not save assistant changes."
+    assert client.get("/api/board").json() == before

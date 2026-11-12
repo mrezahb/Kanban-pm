@@ -73,6 +73,23 @@ def test_request_uses_configured_model_and_keeps_key_out_of_response(
     assert api_key not in result
 
 
+def test_json_mode_requests_a_json_object(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unit-test-key")
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return make_response(
+            {"choices": [{"message": {"content": '{"reply":"Done","actions":[]}'}}]}
+        )
+
+    monkeypatch.setattr(openrouter, "urlopen", fake_urlopen)
+
+    complete_chat([{"role": "user", "content": "Respond as JSON"}], json_mode=True)
+
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+
+
 def test_http_errors_are_reported_without_provider_body_or_key(monkeypatch) -> None:
     api_key = "unit-test-key"
     monkeypatch.setenv("OPENROUTER_API_KEY", api_key)

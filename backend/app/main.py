@@ -4,16 +4,26 @@ import os
 from pathlib import Path
 import secrets
 import sqlite3
-from typing import Annotated, Iterator
+from typing import Annotated, Iterator, TypedDict
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 
+from .assistant import AssistantResponseError, respond_to_chat
 from .database import Database, utc_timestamp
+from .openrouter import OpenRouterError
 from .schemas import (
+    AssistantAction,
+    AssistantChatRequest,
+    AssistantChatResponse,
+    AssistantCreateCardAction,
+    AssistantEditCardAction,
+    AssistantMoveCardAction,
     BoardResponse,
     BoardUpdateRequest,
+    CardRequest,
+    ColumnRequest,
     LoginRequest,
     UserResponse,
 )
@@ -27,6 +37,24 @@ SESSION_COOKIE_NAME = "pm_session"
 SESSION_LIFETIME = timedelta(days=7)
 SESSION_MAX_AGE = int(SESSION_LIFETIME.total_seconds())
 ID_QUERY_BATCH_SIZE = 900
+
+
+class _BoardCard(TypedDict):
+    id: str | None
+    title: str
+    details: str
+
+
+class _BoardColumn(TypedDict):
+    id: str
+    name: str
+    cards: list[_BoardCard]
+
+
+class _BoardData(TypedDict):
+    id: str
+    title: str
+    columns: list[_BoardColumn]
 
 
 def _database_path() -> Path:
@@ -64,7 +92,7 @@ def get_current_user(
     return {"id": session["user_id"], "username": session["username"]}
 
 
-def _load_board(connection: sqlite3.Connection, user_id: str) -> dict[str, object]:
+def _load_board(connection: sqlite3.Connection, user_id: str) -> _BoardData:
     board = connection.execute(
         "SELECT id, title FROM boards WHERE user_id = ?",
         (user_id,),
@@ -91,7 +119,7 @@ def _load_board(connection: sqlite3.Connection, user_id: str) -> dict[str, objec
         """,
         (board["id"],),
     ).fetchall()
-    cards_by_column: dict[str, list[dict[str, str]]] = {
+    cards_by_column: dict[str, list[_BoardCard]] = {
         column["id"]: [] for column in columns
     }
     for card in cards:
@@ -115,6 +143,171 @@ def _load_board(connection: sqlite3.Connection, user_id: str) -> dict[str, objec
             for column in columns
         ],
     }
+
+
+def _update_board(
+    connection: sqlite3.Connection,
+    user_id: str,
+    payload: BoardUpdateRequest,
+) -> _BoardData:
+    now = utc_timestamp()
+    column_ids = [str(column.id) for column in payload.columns if column.id]
+    card_ids = [
+        str(card.id)
+        for column in payload.columns
+        for card in column.cards
+        if card.id
+    ]
+
+    board = connection.execute(
+        "SELECT id FROM boards WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    if board is None:
+        raise HTTPException(status_code=404, detail="Board not found")
+    board_id = board["id"]
+    _ensure_ids_belong_to_board(
+        connection,
+        board_id,
+        column_ids,
+        card_ids,
+    )
+    existing_column_ids = {
+        row["id"]
+        for row in connection.execute(
+            'SELECT id FROM "columns" WHERE board_id = ?',
+            (board_id,),
+        ).fetchall()
+    }
+    if not existing_column_ids.issubset(column_ids):
+        raise HTTPException(
+            status_code=422,
+            detail="Existing board columns cannot be removed",
+        )
+    previous_cards = connection.execute(
+        """
+        SELECT cards.id, cards.column_id, cards.title, cards.details,
+               cards.position, cards.created_at, cards.updated_at
+        FROM cards
+        JOIN "columns" ON "columns".id = cards.column_id
+        WHERE "columns".board_id = ?
+        """,
+        (board_id,),
+    ).fetchall()
+    previous_cards_by_id = {card["id"]: card for card in previous_cards}
+
+    connection.execute('DELETE FROM "columns" WHERE board_id = ?', (board_id,))
+    for column_position, column in enumerate(payload.columns):
+        column_id = str(column.id or uuid4())
+        connection.execute(
+            """
+            INSERT INTO "columns" (id, board_id, name, position)
+            VALUES (?, ?, ?, ?)
+            """,
+            (column_id, board_id, column.name, column_position),
+        )
+        for card_position, card in enumerate(column.cards):
+            card_id = str(card.id or uuid4())
+            previous_card = previous_cards_by_id.get(card_id)
+            unchanged = (
+                previous_card is not None
+                and previous_card["column_id"] == column_id
+                and previous_card["title"] == card.title
+                and previous_card["details"] == card.details
+                and previous_card["position"] == card_position
+            )
+            connection.execute(
+                """
+                INSERT INTO cards (
+                    id, column_id, title, details, position,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    card_id,
+                    column_id,
+                    card.title,
+                    card.details,
+                    card_position,
+                    previous_card["created_at"] if previous_card else now,
+                    previous_card["updated_at"] if unchanged else now,
+                ),
+            )
+    connection.execute(
+        "UPDATE boards SET updated_at = ? WHERE id = ?",
+        (now, board_id),
+    )
+    return _load_board(connection, user_id)
+
+
+def _assistant_board_update(
+    connection: sqlite3.Connection,
+    user_id: str,
+    actions: list[AssistantAction],
+) -> BoardUpdateRequest:
+    board = _load_board(connection, user_id)
+    columns = board["columns"]
+    columns_by_id = {column["id"]: column for column in columns}
+    cards_by_id = {
+        card["id"]: (column, card)
+        for column in columns
+        for card in column["cards"]
+    }
+
+    for action in actions:
+        if isinstance(action, AssistantCreateCardAction):
+            column = columns_by_id.get(str(action.column_id))
+            if column is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Assistant action references an unavailable column",
+                )
+            column["cards"].append(
+                {"id": None, "title": action.title, "details": action.details}
+            )
+        elif isinstance(action, AssistantEditCardAction):
+            card_location = cards_by_id.get(str(action.card_id))
+            if card_location is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Assistant action references an unavailable card",
+                )
+            _, card = card_location
+            if action.title is not None:
+                card["title"] = action.title
+            if action.details is not None:
+                card["details"] = action.details
+        elif isinstance(action, AssistantMoveCardAction):
+            card_location = cards_by_id.get(str(action.card_id))
+            destination = columns_by_id.get(str(action.column_id))
+            if card_location is None or destination is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Assistant action references an unavailable board item",
+                )
+            source, card = card_location
+            source["cards"].remove(card)
+            destination["cards"].append(card)
+            cards_by_id[str(action.card_id)] = (destination, card)
+
+    return BoardUpdateRequest(
+        columns=[
+            ColumnRequest(
+                id=column["id"],
+                name=column["name"],
+                cards=[
+                    CardRequest(
+                        id=card["id"],
+                        title=card["title"],
+                        details=card["details"],
+                    )
+                    for card in column["cards"]
+                ],
+            )
+            for column in columns
+        ]
+    )
 
 
 def _existing_column_owners(
@@ -272,7 +465,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     def get_board(
         user: Annotated[dict[str, str], Depends(get_current_user)],
         db: Annotated[Database, Depends(get_database)],
-    ) -> dict[str, object]:
+    ) -> _BoardData:
         with db.connection() as connection:
             return _load_board(connection, user["id"])
 
@@ -281,97 +474,54 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         payload: BoardUpdateRequest,
         user: Annotated[dict[str, str], Depends(get_current_user)],
         db: Annotated[Database, Depends(get_database)],
-    ) -> dict[str, object]:
-        now = utc_timestamp()
-        column_ids = [str(column.id) for column in payload.columns if column.id]
-        card_ids = [
-            str(card.id)
-            for column in payload.columns
-            for card in column.cards
-            if card.id
-        ]
-
+    ) -> _BoardData:
         with db.transaction() as connection:
-            board = connection.execute(
-                "SELECT id FROM boards WHERE user_id = ?",
-                (user["id"],),
-            ).fetchone()
-            if board is None:
-                raise HTTPException(status_code=404, detail="Board not found")
-            board_id = board["id"]
-            _ensure_ids_belong_to_board(
-                connection,
-                board_id,
-                column_ids,
-                card_ids,
-            )
-            existing_column_ids = {
-                row["id"]
-                for row in connection.execute(
-                    'SELECT id FROM "columns" WHERE board_id = ?',
-                    (board_id,),
-                ).fetchall()
-            }
-            if not existing_column_ids.issubset(column_ids):
-                raise HTTPException(
-                    status_code=422,
-                    detail="Existing board columns cannot be removed",
-                )
-            previous_cards = connection.execute(
-                """
-                SELECT cards.id, cards.column_id, cards.title, cards.details,
-                       cards.position, cards.created_at, cards.updated_at
-                FROM cards
-                JOIN "columns" ON "columns".id = cards.column_id
-                WHERE "columns".board_id = ?
-                """,
-                (board_id,),
-            ).fetchall()
-            previous_cards_by_id = {card["id"]: card for card in previous_cards}
+            return _update_board(connection, user["id"], payload)
 
-            connection.execute('DELETE FROM "columns" WHERE board_id = ?', (board_id,))
-            for column_position, column in enumerate(payload.columns):
-                column_id = str(column.id or uuid4())
-                connection.execute(
-                    """
-                    INSERT INTO "columns" (id, board_id, name, position)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (column_id, board_id, column.name, column_position),
-                )
-                for card_position, card in enumerate(column.cards):
-                    card_id = str(card.id or uuid4())
-                    previous_card = previous_cards_by_id.get(card_id)
-                    unchanged = (
-                        previous_card is not None
-                        and previous_card["column_id"] == column_id
-                        and previous_card["title"] == card.title
-                        and previous_card["details"] == card.details
-                        and previous_card["position"] == card_position
-                    )
-                    connection.execute(
-                        """
-                        INSERT INTO cards (
-                            id, column_id, title, details, position,
-                            created_at, updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            card_id,
-                            column_id,
-                            card.title,
-                            card.details,
-                            card_position,
-                            previous_card["created_at"] if previous_card else now,
-                            previous_card["updated_at"] if unchanged else now,
-                        ),
-                    )
-            connection.execute(
-                "UPDATE boards SET updated_at = ? WHERE id = ?",
-                (now, board_id),
+    @app.post("/api/assistant/chat", response_model=AssistantChatResponse)
+    def assistant_chat(
+        payload: AssistantChatRequest,
+        user: Annotated[dict[str, str], Depends(get_current_user)],
+        db: Annotated[Database, Depends(get_database)],
+    ) -> dict[str, object]:
+        with db.connection() as connection:
+            board = _load_board(connection, user["id"])
+
+        try:
+            assistant_output = respond_to_chat(
+                board,
+                payload.message,
+                payload.history,
             )
-            return _load_board(connection, user["id"])
+        except OpenRouterError:
+            raise HTTPException(
+                status_code=502,
+                detail="The assistant service is unavailable.",
+            ) from None
+        except AssistantResponseError:
+            raise HTTPException(
+                status_code=502,
+                detail="The assistant returned an invalid response.",
+            ) from None
+
+        if not assistant_output.actions:
+            return {"reply": assistant_output.reply, "board_changed": False}
+
+        try:
+            with db.transaction() as connection:
+                update = _assistant_board_update(
+                    connection,
+                    user["id"],
+                    assistant_output.actions,
+                )
+                _update_board(connection, user["id"], update)
+        except sqlite3.Error:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not save assistant changes.",
+            ) from None
+
+        return {"reply": assistant_output.reply, "board_changed": True}
 
     static_dir = Path(
         os.environ.get(
