@@ -34,7 +34,6 @@ Kanban PM یک بورد تخصصی مدیریت پروژه به زبان فار�
    OPENROUTER_API_KEY=your-openrouter-api-key
    ```
 
-   بدون کلید، بخش برد اجرا شد اما درخواست‌های دستیار در دسترس نبودند. فایل `.env` در Git قرار نگرفت.
 6. داده‌های برد در volume پایدار SQLite باقی ماندند. برای توقف کانتینر از `docker compose down` استفاده شد.
 
 ## English
