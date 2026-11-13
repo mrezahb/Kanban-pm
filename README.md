@@ -1,155 +1,73 @@
-# مدیر پروژه | Kanban PM
+# Kanban PM — مدیر پروژه
 
 [فارسی](#فارسی) · [English](#english)
 
 ## فارسی
 
-مدیر پروژه یک MVP فارسی برای مدیریت کارها با برد کانبان است. فرانت‌اند با Next.js ساخته می‌شود؛ FastAPI فایل‌های ایستای آن و API را در یک کانتینر Docker ارائه می‌کند. اطلاعات برد در SQLite ذخیره می‌شوند.
+### معرفی
 
-### قابلیت‌ها
+Kanban PM یک بورد تخصصی مدیریت پروژه به زبان فارسی بود که همراه با دستیار هوشمند برای مدیریت کارت‌ها توسعه داده شد. پروژه در ۱۰ مرحله پیاده‌سازی شد؛ تاریخچهٔ مراحل در [docs/PLAN.md](docs/PLAN.md) ثبت شده است. رابط کاربری، برد پنج‌ستونه، جابه‌جایی و ویرایش کارت‌ها و ذخیرهٔ پایدار اطلاعات در SQLite پیاده‌سازی شدند.
 
-- ورود با نشست هفت‌روزه؛ خروج نشست را باطل می‌کند.
-- برد کانبان با پنج ستون آغازین؛ امکان تغییر نام ستون‌ها، افزودن ستون و ایجاد، ویرایش و جابه‌جایی کارت‌ها.
-- دستیار OpenRouter برای ایجاد، ویرایش و جابه‌جایی کارت‌ها.
-- ذخیرهٔ تغییرهای برد در SQLite با volume پایدار Docker.
+### ابزارهای استفاده‌شده
 
-### اجرا
+- فرانت‌اند: Next.js، React و TypeScript
+- بک‌اند و API: Python و FastAPI
+- پایگاه داده: SQLite
+- بسته‌بندی و اجرا: Docker Compose و `uv`
+- دستیار: OpenRouter با مدل `openai/gpt-oss-120b`
+- آزمون‌ها: Vitest و Playwright برای فرانت‌اند، pytest برای بک‌اند
 
-نیازمند Docker و Docker Compose است. از ریشهٔ مخزن اجرا کنید:
+### راهنمای کوتاه
 
-```sh
-docker compose up --build --detach
-```
+1. از ریشهٔ مخزن، دستور زیر برای ساخت و اجرای برنامه در Docker استفاده شد:
 
-برنامه در [http://localhost:8000](http://localhost:8000) در دسترس است. برای توقف:
+   ```sh
+   docker compose up --build --detach
+   ```
 
-```sh
-docker compose down
-```
+2. رابط در [http://localhost:8000](http://localhost:8000) باز شد و سلامت API در `/api/health` بررسی شد.
+3. ورود آزمایشی با حساب ثابتی انجام شد که برای MVP در کد تعریف شده بود. اطلاعات ورود عمداً در این README عمومی درج نشدند؛ سازوکار ورود پیش از استفادهٔ واقعی باید جایگزین شود.
+4. کارت‌ها از روی برد ایجاد، ویرایش یا جابه‌جا شدند. قابلیت دستیار برای ایجاد، ویرایش و انتقال کارت‌ها پیاده‌سازی شد؛ درخواست زنده به کلید OpenRouter نیاز داشت و در محیط توسعه تأیید نشد.
+5. برای فعال‌کردن دستیار، لازم بود کلید فقط در فایل `.env` محلی تنظیم شود:
 
-ورود MVP:
+   ```dotenv
+   OPENROUTER_API_KEY=your-openrouter-api-key
+   ```
 
-- نام کاربری: `user`
-- گذرواژه: `password`
-
-این اطلاعات ثابت و مخصوص MVP هستند؛ این برنامه را بدون افزودن احراز هویت مناسب برای محیط واقعی منتشر نکنید.
-
-### دستیار هوش مصنوعی
-
-برای استفاده از دستیار، فایل `.env` را در ریشه بسازید و کلید OpenRouter را در آن قرار دهید:
-
-```dotenv
-OPENROUTER_API_KEY=your-openrouter-api-key
-```
-
-مدل استفاده‌شده `openai/gpt-oss-120b` است. بدون این کلید، برنامه و برد اجرا می‌شوند اما درخواست‌های دستیار در دسترس نیستند. فایل `.env` نادیده گرفته می‌شود؛ آن را commit نکنید.
-
-### توسعه و آزمون
-
-آزمون‌ها و ابزارهای فرانت‌اند:
-
-```sh
-cd frontend
-npm ci
-npm test
-npm run test:coverage
-npm run test:e2e
-npm run lint
-npm run build
-```
-
-در PowerShell ویندوز، اگر اجرای `npm` مسدود شد، از `npm.cmd` به‌جای `npm` استفاده کنید.
-
-برای آزمون بک‌اند، از ریشهٔ مخزن یک محیط مجازی بسازید:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r backend\requirements-dev.txt
-.\.venv\Scripts\python -m pytest backend\tests --cov=backend.app --cov-report=term-missing --cov-fail-under=80
-```
-
-در macOS/Linux:
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements-dev.txt
-.venv/bin/python -m pytest backend/tests --cov=backend.app --cov-report=term-missing --cov-fail-under=80
-```
-
-آزمون پوشش فرانت‌اند نیز حداقل ۸۰٪ پوشش خطوط اجرایی را enforce می‌کند.
+   بدون کلید، بخش برد اجرا شد اما درخواست‌های دستیار در دسترس نبودند. فایل `.env` در Git قرار نگرفت.
+6. داده‌های برد در volume پایدار SQLite باقی ماندند. برای توقف کانتینر از `docker compose down` استفاده شد.
 
 ## English
 
-Kanban PM is a Persian-language MVP for project task management. The Next.js frontend is statically built and served with the FastAPI API from one Docker container. Board data is stored in SQLite.
+### Project
 
-### Features
+Kanban PM was a Persian-language project management board with an AI assistant for managing cards. It was implemented in 10 documented stages; the stage history was recorded in [docs/PLAN.md](docs/PLAN.md). The five-column board, card editing and drag-and-drop, and persistent SQLite storage were implemented.
 
-- Login with a seven-day session; logging out revokes the session.
-- A Kanban board with five default columns; rename or add columns, and create, edit, and move cards.
-- An OpenRouter assistant that can create, edit, and move cards.
-- Board changes persist in SQLite on a Docker volume.
+### Tools
 
-### Run
+- Frontend: Next.js, React, and TypeScript
+- Backend and API: Python and FastAPI
+- Database: SQLite
+- Packaging and runtime: Docker Compose and `uv`
+- Assistant: OpenRouter with `openai/gpt-oss-120b`
+- Tests: Vitest and Playwright for the frontend; pytest for the backend
 
-Requires Docker and Docker Compose. From the repository root:
+### Short guide
 
-```sh
-docker compose up --build --detach
-```
+1. From the repository root, the following command built and started the app in Docker:
 
-Open [http://localhost:8000](http://localhost:8000). Stop the app with:
+   ```sh
+   docker compose up --build --detach
+   ```
 
-```sh
-docker compose down
-```
+2. The UI was available at [http://localhost:8000](http://localhost:8000), and API health was checked at `/api/health`.
+3. Local sign-in used the fixed MVP account defined in the source. Its credentials were intentionally omitted from this public README; the sign-in mechanism needed replacement before production use.
+4. Cards were created, edited, and moved on the board. The assistant was implemented to create, edit, and move cards; live requests required an OpenRouter key and were not verified in the development environment.
+5. To enable the assistant, its key had to be set only in a local root `.env` file:
 
-MVP login:
+   ```dotenv
+   OPENROUTER_API_KEY=your-openrouter-api-key
+   ```
 
-- Username: `user`
-- Password: `password`
-
-These fixed credentials are for the MVP only. Do not expose this app to production users without adding appropriate authentication.
-
-### AI assistant
-
-To enable the assistant, create a root `.env` file and add your OpenRouter key:
-
-```dotenv
-OPENROUTER_API_KEY=your-openrouter-api-key
-```
-
-The configured model is `openai/gpt-oss-120b`. The app and board work without this key, but assistant requests are unavailable. `.env` is ignored by Git; do not commit it.
-
-### Development and tests
-
-Frontend tests and tools:
-
-```sh
-cd frontend
-npm ci
-npm test
-npm run test:coverage
-npm run test:e2e
-npm run lint
-npm run build
-```
-
-In Windows PowerShell, if running `npm` is blocked, use `npm.cmd` instead.
-
-For backend tests, create a virtual environment from the repository root.
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r backend\requirements-dev.txt
-.\.venv\Scripts\python -m pytest backend\tests --cov=backend.app --cov-report=term-missing --cov-fail-under=80
-```
-
-On macOS/Linux:
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements-dev.txt
-.venv/bin/python -m pytest backend/tests --cov=backend.app --cov-report=term-missing --cov-fail-under=80
-```
-
-Frontend coverage tests also enforce a minimum 80% line coverage.
+   Without a key, the board worked but assistant requests were unavailable. `.env` was kept out of Git.
+6. Board data persisted in a SQLite Docker volume. The container was stopped with `docker compose down`.
