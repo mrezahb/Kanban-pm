@@ -1,10 +1,13 @@
-# مدیر پروژه
+# فرانت‌اند
 
-تختهٔ کانبان فارسی با پنج ستون ثابت. داده‌ها فقط در حافظهٔ مرورگر نگه‌داری می‌شوند.
+فرانت‌اند Next.js بخشی از برنامهٔ Kanban PM است. راهنمای اجرا، معماری و آزمون‌های کل پروژه در [README ریشه](../README.md) قرار دارد.
 
-```bash
-npm install
+برای توسعهٔ فرانت‌اند از این پوشه:
+
+```sh
+npm ci
 npm run dev
+npm test
+npm run test:coverage
+npm run test:e2e
 ```
-
-آزمون‌ها: `npm test` و `npm run test:e2e`
