@@ -27,7 +27,7 @@ Kanban PM یک بورد تخصصی مدیریت پروژه به زبان فار�
 
 2. رابط در [http://localhost:8000](http://localhost:8000) باز شد و سلامت API در `/api/health` بررسی شد.
 3. ورود آزمایشی با حساب ثابتی انجام شد که برای MVP در کد تعریف شده بود. اطلاعات ورود عمداً در این README عمومی درج نشدند؛ سازوکار ورود پیش از استفادهٔ واقعی باید جایگزین شود.
-4. کارت‌ها از روی برد ایجاد، ویرایش یا جابه‌جا شدند. قابلیت دستیار برای ایجاد، ویرایش و انتقال کارت‌ها پیاده‌سازی شد؛ درخواست زنده به کلید OpenRouter نیاز داشت و در محیط توسعه تأیید نشد.
+4. کارت‌ها از روی برد ایجاد، ویرایش یا جابه‌جا شدند. قابلیت دستیار برای ایجاد، ویرایش و انتقال کارت‌ها پیاده‌سازی شد؛ درخواست زنده در Docker با ایجاد کارت و تأیید ذخیرهٔ آن در SQLite با موفقیت بررسی شد.
 5. برای فعال‌کردن دستیار، لازم بود کلید فقط در فایل `.env` محلی تنظیم شود:
 
    ```dotenv
@@ -61,7 +61,7 @@ Kanban PM was a Persian-language project management board with an AI assistant f
 
 2. The UI was available at [http://localhost:8000](http://localhost:8000), and API health was checked at `/api/health`.
 3. Local sign-in used the fixed MVP account defined in the source. Its credentials were intentionally omitted from this public README; the sign-in mechanism needed replacement before production use.
-4. Cards were created, edited, and moved on the board. The assistant was implemented to create, edit, and move cards; live requests required an OpenRouter key and were not verified in the development environment.
+4. Cards were created, edited, and moved on the board. The assistant was implemented to create, edit, and move cards; a live Docker request was verified by creating a card and confirming it persisted in SQLite.
 5. To enable the assistant, its key had to be set only in a local root `.env` file:
 
    ```dotenv
